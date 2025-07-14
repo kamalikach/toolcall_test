@@ -11,78 +11,94 @@ MODEL_NAME = 'gemini-2.5-flash'
 # User prompt asking for next email message summary
 USER_PROMPT = "Get my next email message and summarize it."
 
-def process_next_message(chat_provider, email_provider):
-    """
-    Requests the next message (email or chat) from the model and processes the function call.
-    If no function call is found, prints the plain text response and all response parts for debugging.
-    """
-    contents = [
-        types.Content(role="user", parts=[types.Part(text=USER_PROMPT)])
-    ]
+chat_provider = ChatMessageProvider('chats.txt')
+email_provider = EmailMessageProvider('emails.txt')
 
-    tools = types.Tool(function_declarations=[EMAIL_FUNCTION_DECLARATION, CHAT_FUNCTION_DECLARATION])
-    config = types.GenerateContentConfig(tools=[tools])
+TOOLS = {
+    EMAIL_FUNCTION_DECLARATION["name"]: {
+        "declaration": EMAIL_FUNCTION_DECLARATION,
+        "provider": email_provider,
+        "method": "get_email_message",  # method to call on provider
+    },
+    CHAT_FUNCTION_DECLARATION["name"]: {
+        "declaration": CHAT_FUNCTION_DECLARATION,
+        "provider": chat_provider,
+        "method": "get_chat_message",
+    },
+    # Add more tools here
+}
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=contents,
-        config=config,
-    )
+function_declarations = [tool["declaration"] for tool in TOOLS.values()]
 
-    candidate = response.candidates[0]
-    content_parts = candidate.content.parts
 
-    # Check if any part has a function call
-    function_call_part = None
-    for part in content_parts:
-        if part.function_call:
-            function_call_part = part
-            break
+def process_next_message():
+        contents = [
+            types.Content(role="user", parts=[types.Part(text=USER_PROMPT)])
+        ]
 
-    if function_call_part:
-        function_call = function_call_part.function_call
-        print(f"Function to call: {function_call.name}")
-        print(f"Arguments: {function_call.args}")
+        tools = types.Tool(function_declarations=function_declarations)
+        config = types.GenerateContentConfig(tools=[tools])
 
-        if function_call.name == "get_email":
-            result = email_provider.get_email_message()
-        elif function_call.name == "get_chat":
-            result = chat_provider.get_chat_message()
-        else:
-            print(f"Unknown function call: {function_call.name}")
-            return
-
-        print(f"Function execution result: {result}")
-
-        function_response_part = types.Part.from_function_response(
-            name=function_call.name,
-            response={"result": result},
-        )
-
-        contents.append(candidate.content)
-        contents.append(types.Content(role="user", parts=[function_response_part]))
-
-        final_response = client.models.generate_content(
+        response = client.models.generate_content(
             model=MODEL_NAME,
             contents=contents,
             config=config,
         )
 
-        print("Final Response Text:", final_response.text)
+        candidate = response.candidates[0]
+        content_parts = candidate.content.parts
 
-    else:
-        print("No function call found in the response.")
-        print("Response text:", response.text)
-        print("All parts in response:")
-        for idx, part in enumerate(content_parts):
-            print(f" Part {idx}: {part}")
+        function_call_part = next((part for part in content_parts if part.function_call), None)
+
+        if function_call_part:
+            function_call = function_call_part.function_call
+            print(f"Function to call: {function_call.name}")
+            print(f"Arguments: {function_call.args}")
+
+            tool = TOOLS.get(function_call.name)
+            if not tool:
+                print(f"Unknown tool requested: {function_call.name}")
+                return
+
+            provider = tool["provider"]
+            method_name = tool["method"]
+            method = getattr(provider, method_name, None)
+            if not method:
+                print(f"Provider does not implement method: {method_name}")
+                return
+
+            result = method()
+            print(f"Function execution result: {result}")
+
+            function_response_part = types.Part.from_function_response(
+                name=function_call.name,
+                response={"result": result},
+            )
+
+            contents.append(candidate.content)
+            contents.append(types.Content(role="user", parts=[function_response_part]))
+
+            final_response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=contents,
+                config=config,
+            )
+
+            print('Final Response:', final_response.text)
+
+        else:
+            print("No function call found in the response.")
+            print("Response text:", response.text)
+            print("All parts in response:")
+            for idx, part in enumerate(content_parts):
+                print(f" Part {idx}: {part}")
+
 
 
 if __name__ == '__main__':
-    chat_provider = ChatMessageProvider('chats.txt')
-    email_provider = EmailMessageProvider('emails.txt')
+
 
     # Call process_next_message multiple times in a loop for clarity
     for _ in range(4):
-        process_next_message(chat_provider, email_provider)
+        process_next_message()
 
